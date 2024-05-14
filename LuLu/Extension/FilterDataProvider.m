@@ -77,27 +77,30 @@ extern BlockList* blockList;
     //log msg
     os_log_debug(logHandle, "%s", __PRETTY_FUNCTION__);
     
-    //init network rule
-    // any/all outbound traffic
+    // regra de rede, define criterios de filtragem como endereco ip de origem/destino, prefixos de rede, protocolos, direcao do trafego, etc
+    // nesse caso, essa eh uma regra que permite todo o trafego de saida
     networkRule = [[NENetworkRule alloc] initWithRemoteNetwork:nil remotePrefix:0 localNetwork:nil localPrefix:0 protocol:NENetworkRuleProtocolAny direction:NETrafficDirectionOutbound];
     
-    //init filter rule
-    // filter traffic, based on network rule
+    // define como o trafego deve ser tratado
+    // associa uma acao especifica a 'networkRule', indicando oq deve ser feito com o trafego que corresponde a regra de rede
     filterRule = [[NEFilterRule alloc] initWithNetworkRule:networkRule action:NEFilterActionFilterData];
     
-    //init filter settings
+    // encapsula configuracoes do filtro de rede e as regras de filtragem ('filterRule')
+    // definir a acao padrao como 'NEFilterActionAllow' indica que se o trafego n corresponder a nenhuma das regras especificadas ele sera permitido
     filterSettings = [[NEFilterSettings alloc] initWithRules:@[filterRule] defaultAction:NEFilterActionAllow];
     
-    //apply rules
+    // apply rules
     [self applySettings:filterSettings completionHandler:^(NSError * _Nullable error) {
         
         //log msg
+        // indica que a aplicacao das configuracoes foi concluida
         os_log_debug(logHandle, "'applySettings' completed");
         
-        //error?
+        // verifica se houve algum erro
         if(nil != error) os_log_error(logHandle, "ERROR: failed to apply filter settings: %@", error.localizedDescription);
         
-        //call completion handler
+        // call completion handler
+        // usado para lidar com o resultado/erro da operacao assincrona
         completionHandler(error);
         
     }];
@@ -106,7 +109,8 @@ extern BlockList* blockList;
     
 }
 
-//stop filter
+// stop filter
+// A method to stop filtering with a given reason, logs the stopping reason and completes the action
 -(void)stopFilterWithReason:(NEProviderStopReason)reason completionHandler:(void (^)(void))completionHandler {
     
     //log msg
@@ -146,11 +150,11 @@ extern BlockList* blockList;
     //log msg
     os_log_debug(logHandle, "method '%s' invoked", __PRETTY_FUNCTION__);
     
-    //init verdict to allow
+    // inicialmente define o veredito para permitir o fluxo. Essa eh a acao default e ira mudar apenas caso seja ditado por outras condicoes
     verdict = [NEFilterNewFlowVerdict allowVerdict];
     
-    //no prefs (yet) or disabled
-    // just allow the flow (don't block)
+    // caso ainda nao exista preferencias ou caso a filtragem esteja desabilitada:
+    // permite o fluxo - imprime um log e vai direto para o fim do metodo para retornar o veredito allow
     if( (0 == preferences.preferences.count) ||
         (YES == [preferences.preferences[PREF_IS_DISABLED] boolValue]) )
     {
@@ -161,15 +165,13 @@ extern BlockList* blockList;
         goto bail;
     }
     
-    //typecast
+    // converte o 'NEFilterFlow' para um 'NEFilterSocketFlow', que eh especifico para fluxos de socket
     socketFlow = (NEFilterSocketFlow*)flow;
     
     //log msg
     //os_log_debug(logHandle, "flow: %{public}@", flow);
     
-    //only once
-    // load init block list
-    // ...early it may fail for remote lists, as network isn't up
+    // usa 'dispatch_once' para garantir que a lista de bloqueio seja inicializada apenas uma vez, evitando operacoes redundantes e garantindo a seguranca da thread.
     dispatch_once(&onceToken, ^{
         
         //dbg msg
@@ -180,14 +182,15 @@ extern BlockList* blockList;
         
     });
 
-    //extract remote endpoint
+    // recupera informacoes sobre o endpoint remoto do fluxo, como o endereco IP ou o nome do host
     remoteEndpoint = (NWHostEndpoint*)socketFlow.remoteEndpoint;
     
     //log msg
     os_log_debug(logHandle, "remote endpoint: %{public}@ / url: %{public}@", remoteEndpoint, flow.URL);
-    
-    //ignore non-outbound traffic
+
+    // checa a direcao do trafego
     // even though we init'd `NETrafficDirectionOutbound`, sometimes get inbound traffic :|
+    // caso seja um fluxo de entrada (non-outbound),  ignoramos e pulamos para o fim do metodo
     if(NETrafficDirectionOutbound != socketFlow.direction)
     {
         //log msg
@@ -197,20 +200,22 @@ extern BlockList* blockList;
         goto bail;
     }
     
-    //process flow
+    // process flow
     // determine verdict
     // deliver alert (if necessary)
     verdict = [self processEvent:flow];
     
     //log msg
     os_log_debug(logHandle, "verdict: %{public}@", verdict);
-    
+
+// fim do metodo
 bail:
         
     return verdict;
 }
 
-//process a network out event from the network extension (OS)
+
+// process a network out event from the network extension (OS)
 // if there is no matching rule, will tell client to show alert
 -(NEFilterNewFlowVerdict*)processEvent:(NEFilterFlow*)flow
 {
@@ -249,7 +254,7 @@ bail:
     //grab console user
     consoleUser = getConsoleUser();
     
-    //check cache for process
+    // busca o processo associado com o fluxo na cache. Caso o processo nao seja encontrado, cria um novo processo
     process = [self.cache objectForKey:flow.sourceAppAuditToken];
     if(nil == process)
     {
@@ -266,6 +271,7 @@ bail:
     
     //sanity check
     // no process? just allow...
+    // caso o processo seja nulo
     if(nil == process)
     {
         //err msg
@@ -283,8 +289,8 @@ bail:
     //os_log_debug(logHandle, "process object for flow: %{public}@", process);
     
     //CHECK:
-    // different logged in user?
-    // just allow flow, as we don't want to block their traffic
+    // different logged in user? Checks if there is a different logged-in user compared to the one associated with the current alert
+    // just allow flow, as we don't want to block the traffic of the new user
     if( (nil != consoleUser) &&
         (YES != [alerts.consoleUser isEqualToString:consoleUser]) )
     {
@@ -302,7 +308,7 @@ bail:
         //dbg msg
         os_log_debug(logHandle, "client in block mode, so disallowing %d/%{public}@", process.pid, process.binary.name);
         
-        //deny
+        // muda o veredito para drop
         verdict = [NEFilterNewFlowVerdict dropVerdict];
         
         //all set
@@ -310,20 +316,20 @@ bail:
     }
         
     //CHECK:
-    // client using (global) block list
+    // if client is using (global) block list and its not empty
     if( (YES == [preferences.preferences[PREF_USE_BLOCK_LIST] boolValue]) &&
         (0 != [preferences.preferences[PREF_BLOCK_LIST] length]) )
     {
         //dbg msg
         os_log_debug(logHandle, "client is using block list '%{public}@' (%lu items) ...will check for match", preferences.preferences[PREF_BLOCK_LIST], (unsigned long)blockList.items.count);
         
-        //match in block list?
+        // checks if the current flow matches any item in the block list
         if(YES == [blockList isMatch:(NEFilterSocketFlow*)flow])
         {
             //dbg msg
             os_log_debug(logHandle, "flow matches item in block list, so denying");
             
-            //deny
+            // theres a match, set veredict to drop
             verdict = [NEFilterNewFlowVerdict dropVerdict];
             
             //all set
@@ -343,26 +349,26 @@ bail:
         //dbg msg
         os_log_debug(logHandle, "found matching rule for %d/%{public}@: %{public}@", process.pid, process.binary.name, matchingRule);
         
-        //deny?
+        // caso a acao da regra seja de bloquear, define o veredito para drop
         // otherwise will default to allow
         if(RULE_STATE_BLOCK == matchingRule.action.intValue)
         {
             //dbg msg
             os_log_debug(logHandle, "setting verdict to: BLOCK");
             
-            //deny
+            // muda o veredito para drop
             verdict = [NEFilterNewFlowVerdict dropVerdict];
         }
-        //allow (msg)
+        // allow (msg)
         else os_log_debug(logHandle, "rule says: ALLOW");
     
-        //all set
+        // all set
         goto bail;
     }
 
     /* NO MATCHING RULE FOUND */
     
-    //cs change?
+    // checks if there has been a code signing change (csChange)
     // update item's rules with new code signing info
     // note: user will be informed about this, if/when alert is delivered
     if(YES == csChange)
@@ -373,6 +379,7 @@ bail:
         //update cs info
         [rules updateCSInfo:process];
     }
+    
     //no matching rule found?
     else
     {
@@ -380,7 +387,7 @@ bail:
         os_log_debug(logHandle, "no (saved) rule found for %d/%{public}@", process.pid, process.binary.name);
     }
 
-    //no client?
+    // no client?
 
     //CHECK:
     // client in passive mode? ...allow
@@ -397,17 +404,17 @@ bail:
     os_log_debug(logHandle, "client not in passive mode");
     
     //CHECK:
-    // there a related alert shown (i.e. for same process)
+    // theres a related alert shownvfor same process
     // save this flow, as only want to process once user responds to first alert
     if(YES == [alerts isRelated:process])
     {
         //dbg msg
         os_log_debug(logHandle, "an alert is shown for process %d/%{public}@, so holding off delivering for now...", process.pid, process.binary.name);
         
-        //add related flow
+        // adiciona em related flow
         [self addRelatedFlow:process.key flow:(NEFilterSocketFlow*)flow];
         
-        //pause
+        // define o veredito como pause
         verdict = [NEFilterNewFlowVerdict pauseVerdict];
         
         //bail
