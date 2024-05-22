@@ -300,6 +300,8 @@ bail:
         //all set
         goto bail;
     }
+
+    // varios CHECKS...
     
     //CHECK:
     // client in (full) block mode? ...block!
